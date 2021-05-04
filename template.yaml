@@ -1,0 +1,145 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  api-errors-template:
+  - Sample SAM Template for api errors 
+  - Inform Slack channel
+  
+Parameters:
+  EnvType:
+    Description: 'Set environment types'
+    Type: 'String'
+    Default: 'stage'
+    AllowedValues: [stage, prod, dev]
+
+# More info about Globals: https://github.com/awslabs/serverless-application-model/blob/master/docs/globals.rst
+Globals:
+  Function:
+    Timeout: 3
+  Api:
+    # enable CORS; to make more specific, change the origin wildcard
+    # to a particular domain name, e.g. "'www.example.com'"
+    Cors:
+      AllowMethods: "'GET,POST,OPTIONS'"
+      AllowHeaders: "'*'"
+      AllowOrigin: "'*'"
+      AllowCredentials: "'*'"
+
+Resources:
+  ## CloudWatchRole for aws gateway account
+  CloudWatchRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - apigateway.amazonaws.com
+            Action: 'sts:AssumeRole'
+      Path: /
+      ManagedPolicyArns:
+        - >-
+          arn:aws:iam::aws:policy/service-role/AmazonAPIGatewayPushToCloudWatchLogs
+  Account:
+    Type: 'AWS::ApiGateway::Account'
+    Properties:
+      CloudWatchRoleArn: !GetAtt 
+        - CloudWatchRole
+        - Arn
+
+  AlarmTopic:
+    Type: AWS::SNS::Topic
+
+  ErrorAPI:
+    Type: AWS::Serverless::Api
+    Properties:
+      #Name: store-data-app
+      StageName: !Ref EnvType
+      MethodSettings: # https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-properties-apigateway-deployment-stagedescription-methodsetting.html#cfn-apigateway-deployment-stagedescription-methodsetting-metricsenabled
+      - LoggingLevel: ERROR # ERROR/INFO level logging 
+        ResourcePath: '/*' # allows for logging on any resource
+        HttpMethod: '*' # allows for logging on any method
+        DataTraceEnabled: true # enabling Log full requests/responses data in console
+        MetricsEnabled: true    # Enable detailed metrics (error 4XX, 5XX, ...)
+  
+  LamdbaToSlackFunction:
+    Type: AWS::Serverless::Function # More info about Function Resource: https://github.com/awslabs/serverless-application-model/blob/master/versions/2016-10-31.md#awsserverlessfunction
+    Properties:
+      CodeUri: src/lambdaSlack/
+      Handler: app.lambdaToSlackHandler
+      Runtime: nodejs14.x
+      Events:
+        SNS: # Alarm triggers the function
+          Type: SNS
+          Properties:
+            Topic: !Ref AlarmTopic
+
+  ErrorsFunction:
+    Type: AWS::Serverless::Function # More info about Function Resource: https://github.com/awslabs/serverless-application-model/blob/master/versions/2016-10-31.md#awsserverlessfunction
+    Properties:
+      CodeUri: src/errors/
+      Handler: app.errorHandler
+      Runtime: nodejs14.x
+      Events:
+        Error:
+          Type: Api # More info about API Event Source: https://github.com/awslabs/serverless-application-model/blob/master/versions/2016-10-31.md#api
+          Properties:
+            RestApiId: !Ref ErrorAPI
+            Path: /error
+            Method: get
+
+  APIGateway4xxAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      MetricName: 4XXError
+      Namespace: AWS/ApiGateway
+      ComparisonOperator: GreaterThanThreshold
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Period: 60
+      Statistic: Average
+      Threshold: 0.1
+      ActionsEnabled: true
+      AlarmName: 4XX Monitor
+      AlarmDescription: Fire alarm if more than 0.1 4XX response occur in any 60 second period
+      Dimensions:
+        - Name: Resource
+          Value: /error
+        - Name: Stage
+          Value: stage
+        - Name: Method
+          Value: GET
+        - Name: ApiName
+          Value: error-template # @todo : why !REF is not working ???
+      TreatMissingData: missing  #https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/AlarmThatSendsEmail.html#alarms-and-missing-data
+      AlarmActions:
+        - !Ref AlarmTopic
+
+  APIGateway5xxAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      MetricName: 5XXError
+      Namespace: AWS/ApiGateway
+      ComparisonOperator: GreaterThanThreshold
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Period: 60
+      Statistic: Average
+      Threshold: 0.1
+      ActionsEnabled: true
+      AlarmName: 5XX Monitor
+      AlarmDescription: Fire alarm if more than 0.1 5XX response occur in any 60 second period
+      Dimensions:
+        - Name: Resource
+          Value: /error
+        - Name: Stage
+          Value: stage
+        - Name: Method
+          Value: GET
+        - Name: ApiName
+          Value: error-template # @todo : why !REF is not working ???/
+      TreatMissingData: missing #https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/AlarmThatSendsEmail.html#alarms-and-missing-data
+      AlarmActions:
+        - !Ref AlarmTopic

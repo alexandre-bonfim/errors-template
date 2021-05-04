@@ -1,0 +1,139 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: 'api-errors-template: - Sample SAM Template for api errors  - Inform
+  Slack channel
+
+  '
+Parameters:
+  EnvType:
+    Description: Set environment types
+    Type: String
+    Default: stage
+    AllowedValues:
+    - stage
+    - prod
+    - dev
+Globals:
+  Function:
+    Timeout: 3
+  Api:
+    Cors:
+      AllowMethods: '''GET,POST,OPTIONS'''
+      AllowHeaders: '''*'''
+      AllowOrigin: '''*'''
+      AllowCredentials: '''*'''
+Resources:
+  CloudWatchRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - apigateway.amazonaws.com
+          Action: sts:AssumeRole
+      Path: /
+      ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/service-role/AmazonAPIGatewayPushToCloudWatchLogs
+  Account:
+    Type: AWS::ApiGateway::Account
+    Properties:
+      CloudWatchRoleArn:
+        Fn::GetAtt:
+        - CloudWatchRole
+        - Arn
+  AlarmTopic:
+    Type: AWS::SNS::Topic
+  ErrorAPI:
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName:
+        Ref: EnvType
+      MethodSettings:
+      - LoggingLevel: ERROR
+        ResourcePath: /*
+        HttpMethod: '*'
+        DataTraceEnabled: true
+        MetricsEnabled: true
+  LamdbaToSlackFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: LamdbaToSlackFunction
+      Handler: app.lambdaToSlackHandler
+      Runtime: nodejs14.x
+      Events:
+        SNS:
+          Type: SNS
+          Properties:
+            Topic:
+              Ref: AlarmTopic
+  ErrorsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ErrorsFunction
+      Handler: app.errorHandler
+      Runtime: nodejs14.x
+      Events:
+        Error:
+          Type: Api
+          Properties:
+            RestApiId:
+              Ref: ErrorAPI
+            Path: /error
+            Method: get
+  APIGateway4xxAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      MetricName: 4XXError
+      Namespace: AWS/ApiGateway
+      ComparisonOperator: GreaterThanThreshold
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Period: 60
+      Statistic: Average
+      Threshold: 0.1
+      ActionsEnabled: true
+      AlarmName: 4XX Monitor
+      AlarmDescription: Fire alarm if more than 0.1 4XX response occur in any 60 second
+        period
+      Dimensions:
+      - Name: Resource
+        Value: /error
+      - Name: Stage
+        Value: stage
+      - Name: Method
+        Value: GET
+      - Name: ApiName
+        Value: error-template
+      TreatMissingData: missing
+      AlarmActions:
+      - Ref: AlarmTopic
+  APIGateway5xxAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      MetricName: 5XXError
+      Namespace: AWS/ApiGateway
+      ComparisonOperator: GreaterThanThreshold
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Period: 60
+      Statistic: Average
+      Threshold: 0.1
+      ActionsEnabled: true
+      AlarmName: 5XX Monitor
+      AlarmDescription: Fire alarm if more than 0.1 5XX response occur in any 60 second
+        period
+      Dimensions:
+      - Name: Resource
+        Value: /error
+      - Name: Stage
+        Value: stage
+      - Name: Method
+        Value: GET
+      - Name: ApiName
+        Value: error-template
+      TreatMissingData: missing
+      AlarmActions:
+      - Ref: AlarmTopic
